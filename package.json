@@ -1,0 +1,18 @@
+{
+  "name": "enroll-u-cdk",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy --all"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "aws-cdk": "^2.1133.0",
+    "aws-cdk-lib": "^2.262.1",
+    "constructs": "^10.4.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
