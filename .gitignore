@@ -1,0 +1,37 @@
+# Generated artifacts
+cdk.out/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+node_modules/
+
+# Environment and Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# CDK local cache
+cdk.context.json
+.cdk.staging/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db

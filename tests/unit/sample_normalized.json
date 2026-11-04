@@ -1,0 +1,41 @@
+{
+  "institution": {
+    "name": "Universidad de Prueba",
+    "address": {
+      "city": "Mexico City",
+      "country": "Mexico"
+    },
+    "website": "https://example.edu",
+    "contact": {
+      "email": "info@example.edu"
+    }
+  },
+  "programs": [
+    {
+      "name": "Master in Data Science",
+      "level": "Postgraduate",
+      "modality": "Online",
+      "duration": "1 year",
+      "requirements": [
+        "Bachelor's degree in STEM field",
+        "English proficiency B2"
+      ],
+      "financials": {
+        "currency": "MXN",
+        "costs": {
+          "enrollment_fee": 1500.0,
+          "tuition_fee": 45000.0
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "document_id": "test-doc-12345",
+    "document_type": "pdf_digital",
+    "language_detected": "es",
+    "extraction_method": "pymupdf",
+    "confidence_score": 0.95,
+    "extraction_timestamp": "2026-07-25T10:00:00Z",
+    "original_file_path": "C:/Users/nanda/Downloads/test_doc.pdf"
+  }
+}

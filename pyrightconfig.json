@@ -1,0 +1,15 @@
+{
+  "include": ["lambdas", "layers", "tests"],
+  "extraPaths": [
+    "layers/common",
+    "lambdas/normalize",
+    "lambdas/validate",
+    "lambdas/crud",
+    "lambdas/extract",
+    "lambdas/mysql_writer"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}
