@@ -61,10 +61,8 @@ def handler(event, context):
                     "body": json.dumps({"error": "No valid final_json provided and no existing extraction result found"}, ensure_ascii=False)
                 }
                 
-        # Approve the document with audit traceability
-        user_info = database.extract_user_info(event)
-        approver = user_info.get("email") or user_info.get("user_id")
-        result = database.approve_document(document_id, final_json, approved_by=approver)
+        # Approve the document
+        result = database.approve_document(document_id, final_json)
         
         # Invoke downstream MySQL Writer Lambda asynchronously
         import boto3

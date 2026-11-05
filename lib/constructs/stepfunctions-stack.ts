@@ -10,11 +10,13 @@ export interface StepFunctionsStackProps extends StackProps {
   readonly extractFn: lambda.IFunction;
   readonly normalizeFn: lambda.IFunction;
   readonly validateFn: lambda.IFunction;
+  readonly consolidationFn?: lambda.IFunction;
   readonly workflowRole: iam.IRole;
 }
 
 export class StepFunctionsStack extends Stack {
   public readonly stateMachine: sfn.StateMachine;
+  public readonly batchStateMachine: sfn.StateMachine;
 
   constructor(scope: Construct, id: string, props: StepFunctionsStackProps) {
     super(scope, id, props);
@@ -95,5 +97,98 @@ export class StepFunctionsStack extends Stack {
     props.extractFn.grantInvoke(props.workflowRole);
     props.normalizeFn.grantInvoke(props.workflowRole);
     props.validateFn.grantInvoke(props.workflowRole);
-  }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // EnrollUBatchWorkflow (DPI Requirement 5)
+    // ─────────────────────────────────────────────────────────────────────────
+    const batchLogGroup = new logs.LogGroup(this, 'BatchWorkflowLogGroup', {
+      logGroupName: '/aws/vendedlogs/states/EnrollUBatchWorkflow',
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    const batchFailed = new sfn.Fail(this, 'BatchFailed', {
+      stateName: 'BatchFailed',
+      comment: 'Batch processing failed.',
+    });
+
+    const batchSucceeded = new sfn.Succeed(this, 'BatchSucceeded', {
+      comment: 'Batch execution and consolidation completed successfully.',
+    });
+
+    // Sub-execution task calling the existing single-file state machine
+    const executeSingleDocWorkflow = new tasks.StepFunctionsStartExecution(this, 'ExecuteDocumentWorkflow', {
+      stateMachine: this.stateMachine,
+      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
+      input: sfn.TaskInput.fromObject({
+        'bucket.$': '$.bucket',
+        'key.$': '$.key',
+        'document_id.$': '$.document_id',
+        'documentId.$': '$.documentId',
+        'processing_mode.$': '$.processing_mode',
+        'processingMode.$': '$.processingMode',
+        'group_id.$': '$.group_id',
+        'groupId.$': '$.groupId',
+        'batch_id.$': '$.batch_id',
+        'batchId.$': '$.batchId',
+        'institution_name.$': '$.institution_name',
+        'institutionName.$': '$.institutionName',
+      }),
+      outputPath: '$.Output',
+    });
+
+    // Catch individual document failures so remaining documents continue processing
+    const singleDocFailedFallback = new sfn.Pass(this, 'SingleDocFailedFallback', {
+      result: sfn.Result.fromObject({ status: 'failed', message: 'Document pipeline failed' }),
+    });
+    executeSingleDocWorkflow.addCatch(singleDocFailedFallback, {
+      errors: ['States.ALL'],
+      resultPath: '$.errorInfo',
+    });
+
+    // Map state for documents with concurrency control
+    const processBatchMap = new sfn.Map(this, 'ProcessDocumentsMap', {
+      itemsPath: '$.documents',
+      resultPath: '$.processedDocuments',
+      maxConcurrency: 3,
+      comment: 'Process documents concurrently using existing EnrollUWorkflow',
+    });
+    processBatchMap.itemProcessor(executeSingleDocWorkflow);
+
+    let batchChain: sfn.Chain;
+
+    if (props.consolidationFn) {
+      const consolidationTask = new tasks.LambdaInvoke(this, 'ConsolidationTask', {
+        lambdaFunction: props.consolidationFn,
+        payload: sfn.TaskInput.fromObject({
+          'batch_id.$': '$.batch_id',
+          'batchId.$': '$.batchId',
+          'groups.$': '$.groups',
+        }),
+        resultPath: '$.consolidationResult',
+      });
+      consolidationTask.addCatch(batchFailed, { errors: ['States.ALL'], resultPath: '$.consolidationError' });
+      props.consolidationFn.grantInvoke(props.workflowRole);
+
+      batchChain = sfn.Chain.start(processBatchMap)
+        .next(consolidationTask)
+        .next(batchSucceeded);
+    } else {
+      batchChain = sfn.Chain.start(processBatchMap).next(batchSucceeded);
+    }
+
+    this.batchStateMachine = new sfn.StateMachine(this, 'BatchWorkflowStateMachine', {
+      stateMachineName: 'EnrollUBatchWorkflow',
+      definitionBody: sfn.DefinitionBody.fromChainable(batchChain),
+      role: props.workflowRole,
+      logs: {
+        destination: batchLogGroup,
+        level: sfn.LogLevel.ALL,
+        includeExecutionData: true,
+      },
+      stateMachineType: sfn.StateMachineType.STANDARD,
+      timeout: Duration.minutes(30),
+      tracingEnabled: true,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
 }

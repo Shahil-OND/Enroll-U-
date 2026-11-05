@@ -4,7 +4,6 @@ import { AccountStack } from '../lib/constructs/account-stack';
 import { ApiGatewayStack } from '../lib/constructs/apigateway-stack';
 import { BedrockStack } from '../lib/constructs/bedrock-stack';
 import { CloudFrontStack } from '../lib/constructs/cloudfront-stack';
-import { CognitoStack } from '../lib/constructs/cognito-stack';
 import { DatabaseStack } from '../lib/constructs/database-stack';
 import { DynamoDBStack } from '../lib/constructs/dynamodb-stack';
 import { EventBridgeStack } from '../lib/constructs/eventbridge-stack';
@@ -26,7 +25,7 @@ cdk.Tags.of(app).add('aws-apn-id', 'pc:7t8pxq5dh89gbwotrt59s3ugj');
 
 const env = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
-  region: process.env.CDK_DEFAULT_REGION || 'us-west-2',
+  region: process.env.CDK_DEFAULT_REGION,
 };
 
 const networkingStack = new NetworkingStack(app, 'NetworkingStack', { env });
@@ -42,6 +41,7 @@ const lambdaStack = new LambdaStack(app, 'LambdaStack', {
   mysqlSecret: secretsStack.mysqlSecret,
   // Deterministic CDK token — resolves to the actual ARN at deploy time
   stateMachineArn: `arn:${cdk.Aws.PARTITION}:states:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:stateMachine:EnrollUWorkflow`,
+  batchStateMachineArn: `arn:${cdk.Aws.PARTITION}:states:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:stateMachine:EnrollUBatchWorkflow`,
 });
 
 const textractStack = new TextractStack(app, 'TextractStack', {
@@ -58,6 +58,7 @@ const stepFunctionsStack = new StepFunctionsStack(app, 'StepFunctionsStack', {
   extractFn: lambdaStack.extractFn,
   normalizeFn: lambdaStack.normalizeFn,
   validateFn: lambdaStack.validateFn,
+  consolidationFn: lambdaStack.consolidationFn,
   workflowRole: iamStack.workflowRole,
 });
 const eventBridgeStack = new EventBridgeStack(app, 'EventBridgeStack', {
@@ -65,7 +66,6 @@ const eventBridgeStack = new EventBridgeStack(app, 'EventBridgeStack', {
   stateMachine: stepFunctionsStack.stateMachine,
   ingestBucket: s3Stack.ingestBucket,
 });
-const cognitoStack = new CognitoStack(app, 'CognitoStack', { env });
 const apiGatewayStack = new ApiGatewayStack(app, 'ApiGatewayStack', {
   env,
   approveFn: lambdaStack.approveFn,
@@ -76,12 +76,13 @@ const apiGatewayStack = new ApiGatewayStack(app, 'ApiGatewayStack', {
   uploadFn: lambdaStack.uploadFn,
   updateJsonFn: lambdaStack.updateJsonFn,
   translateFn: lambdaStack.translateFn,
-  userPool: cognitoStack.userPool,
+  batchFn: lambdaStack.batchFn,
 });
 const cloudFrontStack = new CloudFrontStack(app, 'CloudFrontStack', { env });
 const databaseStack = new DatabaseStack(app, 'DatabaseStack', {
   env,
   mysqlSecret: secretsStack.mysqlSecret,
+  stagingMysqlSecret: secretsStack.stagingMysqlSecret,
   vpc: networkingStack.vpc,
   writerLambdaSecurityGroup: networkingStack.writerLambdaSecurityGroup,
 });
@@ -105,7 +106,6 @@ void bedrockStack;
 void eventBridgeStack;
 void apiGatewayStack;
 void cloudFrontStack;
-void cognitoStack;
 void monitoringStack;
 void accountStack;
 

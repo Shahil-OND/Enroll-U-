@@ -37,6 +37,19 @@ export class IAMStack extends Stack {
       ],
       resources: ['*'],
     }));
+
+    // Required for Step Functions to execute nested state machines (.sync / RUN_JOB)
+    this.workflowRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'states:StartExecution',
+        'states:DescribeExecution',
+        'states:StopExecution',
+        'events:PutTargets',
+        'events:PutRule',
+        'events:DescribeRule',
+      ],
+      resources: ['*'],
+    }));
   }
 }
 

@@ -36,10 +36,8 @@ def handler(event, context):
                 # If not a JSON string, fallback to using raw body string if it exists
                 reason = body_str.strip() or reason
                 
-        # Reject the document with audit traceability
-        user_info = database.extract_user_info(event)
-        rejector = user_info.get("email") or user_info.get("user_id")
-        database.reject_document(document_id, reason, rejected_by=rejector)
+        # Reject the document
+        database.reject_document(document_id, reason)
         return {
             "statusCode": 200,
             "headers": headers,

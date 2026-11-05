@@ -8,6 +8,7 @@ import { Construct } from 'constructs';
 
 export interface DatabaseStackProps extends StackProps {
   readonly mysqlSecret: secretsmanager.ISecret;
+  readonly stagingMysqlSecret?: secretsmanager.ISecret;
   readonly vpc: ec2.IVpc;
   readonly writerLambdaSecurityGroup: ec2.ISecurityGroup;
 }
@@ -40,6 +41,8 @@ export class DatabaseStack extends Stack {
       ],
     });
 
+    const activeSecret = props.stagingMysqlSecret || props.mysqlSecret;
+
     this.mysqlWriterFn = new lambda.Function(this, 'MysqlWriterFunction', {
       functionName: 'EnrollU-MySqlWriter',
       runtime: lambda.Runtime.PYTHON_3_12,
@@ -48,8 +51,10 @@ export class DatabaseStack extends Stack {
       role: this.writerRole,
       environment: {
         PROJECT_NAME: 'EnrollU',
-        ENVIRONMENT: 'POC',
-        MYSQL_SECRET_ARN: props.mysqlSecret.secretArn,
+        ENVIRONMENT: 'STAGING',
+        DPI_MODE: 'staging',
+        MYSQL_SECRET_ARN: activeSecret.secretArn,
+        MYSQL_STAGING_SECRET_ARN: activeSecret.secretArn,
       },
       vpc: props.vpc,
       securityGroups: [props.writerLambdaSecurityGroup],
@@ -57,7 +62,10 @@ export class DatabaseStack extends Stack {
       memorySize: 512,
     });
 
-    props.mysqlSecret.grantRead(this.mysqlWriterFn);
+    activeSecret.grantRead(this.mysqlWriterFn);
+    if (props.stagingMysqlSecret) {
+      props.mysqlSecret.grantRead(this.mysqlWriterFn);
+    }
 
     new CfnOutput(this, 'DatabaseSecurityGroupId', { value: this.databaseSecurityGroup.securityGroupId });
   }

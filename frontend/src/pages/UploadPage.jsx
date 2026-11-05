@@ -1,11 +1,11 @@
 // pages/UploadPage.jsx — Ingestion & raw text extractor preview with Bulk Processing support
-import { AlertCircle, ArrowRight, CheckCircle, Cpu, FileText, Layers, Loader2, RefreshCw, Search, UploadCloud, XCircle } from 'lucide-react';
+import { AlertCircle, ArrowRight, CheckCircle, Clock, Cpu, FileText, Layers, Loader2, RefreshCw, Search, UploadCloud, Users, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FileIcon } from '../components/DocumentCard';
 import UploadZone from '../components/UploadZone';
 import BulkUploadZone from '../components/BulkUploadZone';
-import { getDocument, pasteText, reprocessDoc } from '../services/client';
+import { getDocument, getBatch, pasteText, reprocessDoc } from '../services/client';
 
 export default function UploadPage() {
   const [uploadedId, setUploadedId] = useState(() => sessionStorage.getItem('last_uploaded_id') || null);
@@ -17,8 +17,10 @@ export default function UploadPage() {
   const [pasting, setPasting] = useState(false);
   const [pastingError, setPastingError] = useState(null);
 
-  // ── Bulk Processing State ──────────────────────────────────────────────────
-  const [bulkDocs, setBulkDocs] = useState([]); // [{ document_id, filename, status, error_message }]
+  // ── Bulk Processing & Batch State ──────────────────────────────────────────
+  const [bulkDocs, setBulkDocs] = useState([]); // [{ document_id, filename, status, error_message, processing_mode, group_id }]
+  const [activeBatchId, setActiveBatchId] = useState(null);
+  const [batchInfo, setBatchInfo] = useState(null);
 
   function handleUploaded(data) {
     if (data?.document_id) {
@@ -28,6 +30,10 @@ export default function UploadPage() {
     setDoc(null);
     setErrorMsg(null);
     setBulkDocs([]);
+    setActiveBatchId(null);
+    setBatchInfo(null);
+    setActiveBatchId(null);
+    setBatchInfo(null);
   }
 
   function handleBulkUploaded(data) {
@@ -35,11 +41,17 @@ export default function UploadPage() {
       const initialDocs = data.documents.map(d => ({
         document_id: d.document_id,
         filename: d.filename,
-        status: 'processing',
+        processing_mode: d.processing_mode || 'standalone',
+        group_id: d.group_id,
+        institution_name: d.institution_name,
+        status: d.status || 'processing',
         error_message: null
       }));
       setBulkDocs(initialDocs);
       setUploadedId(null);
+    }
+    if (data?.batchId) {
+      setActiveBatchId(data.batchId);
     }
   }
 
@@ -100,16 +112,27 @@ export default function UploadPage() {
     };
   }, [uploadedId]);
 
-  // Poll bulk document batch statuses
+  // Poll bulk document batch statuses & batch progress
   useEffect(() => {
     if (!bulkDocs || !bulkDocs.length) return;
     let active = true;
 
     const pollBulk = async () => {
       try {
+        if (activeBatchId) {
+          try {
+            const bInfo = await getBatch(activeBatchId);
+            if (active && bInfo) {
+              setBatchInfo(bInfo);
+            }
+          } catch (bErr) {
+            console.error('Batch progress fetch error:', bErr);
+          }
+        }
+
         const updatedDocs = await Promise.all(
           bulkDocs.map(async (item) => {
-            if (['pending_review', 'approved', 'rejected', 'failed'].includes(item.status)) {
+            if (['pending_review', 'partial', 'approved', 'rejected', 'failed'].includes(item.status)) {
               return item;
             }
             try {
@@ -118,7 +141,10 @@ export default function UploadPage() {
                 ...item,
                 status: res.status,
                 filename: res.filename || item.filename,
-                error_message: res.error_message
+                error_message: res.error_message,
+                processing_mode: res.processing_mode || item.processing_mode,
+                group_id: res.groupId || res.group_id || item.group_id,
+                institution_name: res.institutionName || res.institution_name || item.institution_name
               };
             } catch (err) {
               return item;
@@ -130,9 +156,9 @@ export default function UploadPage() {
         setBulkDocs(updatedDocs);
 
         const allFinished = updatedDocs.every(d =>
-          ['pending_review', 'approved', 'rejected', 'failed'].includes(d.status)
+          ['pending_review', 'partial', 'approved', 'rejected', 'failed'].includes(d.status)
         );
-        if (allFinished) {
+        if (allFinished && (!activeBatchId || (batchInfo && ['completed', 'completed_with_errors', 'failed'].includes(batchInfo.overallBatchStatus)))) {
           active = false;
         }
       } catch (e) {
@@ -147,7 +173,7 @@ export default function UploadPage() {
       active = false;
       clearInterval(intervalId);
     };
-  }, [bulkDocs.length, bulkDocs.map(d => d.status).join(',')]);
+  }, [bulkDocs.length, activeBatchId, bulkDocs.map(d => d.status).join(','), batchInfo?.overallBatchStatus]);
 
   const steps = [
     { icon: <UploadCloud size={22} style={{ color: 'var(--primary)' }} />, step: '1. Ingest', desc: 'Upload brochure files' },
@@ -164,6 +190,8 @@ export default function UploadPage() {
     setPastedText('');
     setPastingError(null);
     setBulkDocs([]);
+    setActiveBatchId(null);
+    setBatchInfo(null);
   }
 
   return (
@@ -365,6 +393,7 @@ export default function UploadPage() {
 
               {bulkDocs.map((item, idx) => {
                 const isReady = item.status === 'pending_review' || item.status === 'approved';
+                const isPartial = item.status === 'partial';
                 const isProcessing = ['processing', 'uploaded', 'processing_extraction', 'processing_normalization', 'processing_validation'].includes(item.status);
                 const isFailed = item.status === 'failed';
 
@@ -377,14 +406,22 @@ export default function UploadPage() {
                     {/* State Icon */}
                     <div>
                       {isReady && <CheckCircle size={18} style={{ color: 'var(--accent-green)' }} />}
+                      {isPartial && <Clock size={18} style={{ color: 'var(--status-pending)' }} />}
                       {isProcessing && <Loader2 className="animate-spin" size={18} style={{ color: 'var(--primary)' }} />}
                       {isFailed && <XCircle size={18} style={{ color: 'var(--status-rejected)' }} />}
                     </div>
 
-                    {/* Document Name */}
-                    <div style={{ fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <FileIcon filename={item.filename} size={18} />
-                      <span>{item.filename}</span>
+                    {/* Document Name & Group Tag */}
+                    <div style={{ fontWeight: 600, color: 'var(--text)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <FileIcon filename={item.filename} size={18} />
+                        <span>{item.filename}</span>
+                      </div>
+                      {item.processing_mode === 'grouped' && (
+                        <div style={{ fontSize: 11, color: 'var(--primary)', fontWeight: 500, paddingLeft: 26 }}>
+                          Institution Group: {item.institution_name || item.group_id}
+                        </div>
+                      )}
                     </div>
 
                     {/* Processing Status Badge */}
@@ -392,6 +429,11 @@ export default function UploadPage() {
                       {isReady && (
                         <span className="badge badge-approved" style={{ fontSize: 11, padding: '4px 8px' }}>
                           ✓ Ready for Review
+                        </span>
+                      )}
+                      {isPartial && (
+                        <span className="badge badge-pending" style={{ fontSize: 11, padding: '4px 8px', background: '#fef3c7', color: '#92400e' }}>
+                          ⏳ Partial (Awaiting Group Consolidation)
                         </span>
                       )}
                       {isProcessing && (
@@ -417,6 +459,11 @@ export default function UploadPage() {
                           Review <ArrowRight size={12} />
                         </button>
                       )}
+                      {isPartial && (
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                          In Group Workflow
+                        </span>
+                      )}
                       {isFailed && (
                         <span style={{ fontSize: 11, color: 'var(--status-rejected)' }}>
                           {item.error_message ? item.error_message.slice(0, 30) + '…' : 'Error'}
@@ -427,6 +474,55 @@ export default function UploadPage() {
                 );
               })}
             </div>
+
+            {/* Institution Groups & Consolidation Summary (DPI Requirement 8 & 9) */}
+            {batchInfo?.institutionGroups && batchInfo.institutionGroups.length > 0 && (
+              <div style={{ marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 20 }}>
+                <h3 style={{ fontSize: 15, fontWeight: 700, margin: '0 0 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Users size={18} style={{ color: 'var(--primary)' }} /> Institution Groups Consolidation
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {batchInfo.institutionGroups.map((grp) => {
+                    const isConsolidated = Boolean(grp.consolidatedDocumentId);
+                    return (
+                      <div
+                        key={grp.groupId}
+                        style={{
+                          background: 'var(--surface-alt)', border: '1px solid var(--border)',
+                          borderRadius: 'var(--radius-md)', padding: '14px 18px',
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
+                            {grp.institutionName || grp.groupId}
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                            {grp.documents?.length || 0} documents in group • Status: <strong style={{ textTransform: 'capitalize' }}>{grp.status}</strong>
+                          </div>
+                        </div>
+
+                        <div>
+                          {isConsolidated ? (
+                            <button
+                              className="btn btn-primary btn-sm"
+                              style={{ fontSize: 12, padding: '6px 14px', background: 'var(--accent-green)', borderColor: 'var(--accent-green)' }}
+                              onClick={() => navigate(`/review/${grp.consolidatedDocumentId}`)}
+                            >
+                              Review Consolidated Record <ArrowRight size={13} />
+                            </button>
+                          ) : (
+                            <span className="badge badge-pending" style={{ fontSize: 11, padding: '4px 10px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <Loader2 className="animate-spin" size={12} /> Consolidating Group…
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       ) : (

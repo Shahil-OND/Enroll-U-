@@ -194,6 +194,11 @@ function ProgramCard({ prog, idx, total, onChange }) {
         <span style={{ fontWeight: 700, fontSize: 14 }}>Program {idx + 1} of {total}</span>
         {prog.level && <span className="tag">{prog.level}</span>}
         {prog.modality && <span className="tag">{prog.modality}</span>}
+        {prog._sources?.name && (
+          <span style={{ fontSize: 10, background: 'rgba(99, 102, 241, 0.1)', color: '#4f46e5', padding: '2px 6px', borderRadius: 4, fontWeight: 500 }} title={`Source: ${prog._sources.name.filename}`}>
+            📄 {prog._sources.name.filename}
+          </span>
+        )}
         <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', color: 'var(--text)' }}>
           <input type="checkbox" checked={isApproved} onChange={e => set('approved', e.target.checked)} />
           Accept Program
@@ -885,6 +890,70 @@ function DetailPanel({ doc, onAction, onBack }) {
   const warnings = meta?.warnings || [];
   const confidence = Math.round((doc.confidence_score || 0) * 100);
 
+  // Consolidated group & conflict data (DPI Requirement 10)
+  const isConsolidated = Boolean(doc?.is_consolidated || meta?.is_consolidated);
+  const conflicts = (() => {
+    const rawC = doc?.conflicts || data?.conflicts || meta?.conflicts;
+    if (typeof rawC === 'string') {
+      try { return JSON.parse(rawC); } catch { return []; }
+    }
+    return Array.isArray(rawC) ? rawC : [];
+  })();
+  const sourceDocs = (() => {
+    const rawS = doc?.source_documents || data?.source_documents || meta?.source_documents;
+    if (typeof rawS === 'string') {
+      try { return JSON.parse(rawS); } catch { return []; }
+    }
+    return Array.isArray(rawS) ? rawS : [];
+  })();
+
+  function handleResolveConflict(conflictIndex, selectedVal) {
+    const conf = conflicts[conflictIndex];
+    if (!conf) return;
+
+    const updatedConflicts = conflicts.map((c, idx) => {
+      if (idx === conflictIndex) {
+        return { ...c, selected_value: selectedVal };
+      }
+      return c;
+    });
+    set('conflicts', updatedConflicts);
+
+    const pName = conf.program_name;
+    const prop = conf.property;
+    if (pName && prop) {
+      const updatedCampuses = (data.campuses || []).map(camp => {
+        const updatedProgs = (camp.academic_programs || []).map(p => {
+          if ((p.name || '').toLowerCase().trim() === (pName || '').toLowerCase().trim() ||
+              (p.name && pName && (p.name.toLowerCase().includes(pName.toLowerCase()) || pName.toLowerCase().includes(p.name.toLowerCase())))) {
+            const pCopy = { ...p };
+            if (prop === 'tuition_fee' || prop === 'enrollment_fee') {
+              pCopy.financials = {
+                ...(pCopy.financials || {}),
+                costs: {
+                  ...(pCopy.financials?.costs || {}),
+                  [prop]: selectedVal
+                }
+              };
+            } else if (prop === 'currency') {
+              pCopy.financials = {
+                ...(pCopy.financials || {}),
+                currency: selectedVal
+              };
+            } else {
+              pCopy[prop] = selectedVal;
+            }
+            return pCopy;
+          }
+          return p;
+        });
+        return { ...camp, academic_programs: updatedProgs };
+      });
+      set('campuses', updatedCampuses);
+      showToast(`✓ Resolved ${prop} to ${selectedVal}`, 'info');
+    }
+  }
+
   // Tab styles
   const tabStyle = (active) => ({
     padding: '8px 16px', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
@@ -911,13 +980,26 @@ function DetailPanel({ doc, onAction, onBack }) {
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
               {(doc?.document_id || '').slice(0, 12)}… · {fmtDate(doc?.extraction_timestamp)}
               · Method: <b>{doc?.extraction_method || meta?.extraction_method || data?.extraction_method || '—'}</b>
-              {doc?.uploaded_by && <span> · Uploaded by: <b style={{ color: 'var(--text)' }}>{doc.uploaded_by}</b></span>}
-              {doc?.approved_by && <span> · Approved by: <b style={{ color: 'var(--accent-green)' }}>{doc.approved_by}</b></span>}
-              {doc?.rejected_by && <span> · Rejected by: <b style={{ color: 'var(--status-rejected)' }}>{doc.rejected_by}</b></span>}
-              {doc?.edited_by && <span> · Last edited by: <b style={{ color: 'var(--primary)' }}>{doc.edited_by}</b></span>}
             </div>
           </div>
           <StatusBadge status={doc?.status} />
+
+          {isConsolidated && (
+            <span style={{
+              background: '#e0e7ff', color: '#4338ca', fontSize: 11, fontWeight: 700,
+              padding: '4px 10px', borderRadius: 100, display: 'inline-flex', alignItems: 'center', gap: 5
+            }}>
+              🏛 Consolidated Institution Record
+            </span>
+          )}
+          {conflicts.length > 0 && (
+            <span style={{
+              background: '#fef3c7', color: '#b45309', fontSize: 11, fontWeight: 700,
+              padding: '4px 10px', borderRadius: 100, display: 'inline-flex', alignItems: 'center', gap: 5
+            }}>
+              ⚠️ {conflicts.length} Conflict(s)
+            </span>
+          )}
 
           {/* Warnings Banner - Clickable Floating Popover Overlay */}
           {warnings.length > 0 && (
@@ -1074,6 +1156,104 @@ function DetailPanel({ doc, onAction, onBack }) {
             {/* ── CARDS TAB ──────────────────────────────────────────────────── */}
             {tab === 'cards' && (
               <>
+                {/* Consolidated Source Documents Header (DPI Requirement 10) */}
+                {isConsolidated && sourceDocs.length > 0 && (
+                  <div style={{
+                    background: 'var(--surface)', border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius)', padding: 14, marginBottom: 14,
+                    display: 'flex', flexDirection: 'column', gap: 8
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+                        Source Documents ({sourceDocs.length})
+                      </span>
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        All fields merged into this unified record
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {sourceDocs.map((s, sIdx) => (
+                        <div key={sIdx} style={{
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          background: 'var(--surface-alt)', border: '1px solid var(--border)',
+                          borderRadius: 6, padding: '4px 10px', fontSize: 12
+                        }}>
+                          <FileIcon filename={s.filename} size={14} />
+                          <span style={{ fontWeight: 600 }}>{s.filename}</span>
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                            ({Math.round((s.confidence_score || 1) * 100)}% conf)
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Conflict Resolution Section (DPI Requirement 8 & 10) */}
+                {conflicts.length > 0 && (
+                  <div style={{
+                    background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 'var(--radius)',
+                    padding: 16, marginBottom: 16
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 14, color: '#92400e' }}>
+                        <AlertTriangle size={18} style={{ color: '#d97706', flexShrink: 0 }} />
+                        <span>{conflicts.length} Value Conflict(s) Detected across Source Documents</span>
+                      </div>
+                      <span style={{ fontSize: 11, color: '#92400e', background: '#fef3c7', padding: '2px 8px', borderRadius: 100, fontWeight: 700 }}>
+                        Operator Decision Required
+                      </span>
+                    </div>
+                    <p style={{ fontSize: 12, color: '#b45309', margin: '0 0 12px', lineHeight: 1.4 }}>
+                      Different source documents reported different values for this institution. Select the authoritative value for each conflict below:
+                    </p>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {conflicts.map((conf, cIdx) => (
+                        <div key={cIdx} style={{
+                          background: 'white', border: '1px solid #fef08a', borderRadius: 'var(--radius-sm)',
+                          padding: 12, display: 'flex', flexDirection: 'column', gap: 8
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                            <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>
+                              {conf.field}
+                            </span>
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                              {conf.description}
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                            {(conf.values || []).map((vItem, vIdx) => {
+                              const isSelected = conf.selected_value === vItem.value;
+                              return (
+                                <button
+                                  key={vIdx}
+                                  type="button"
+                                  onClick={() => handleResolveConflict(cIdx, vItem.value)}
+                                  style={{
+                                    display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
+                                    borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                                    border: isSelected ? '2px solid var(--primary)' : '1px solid var(--border)',
+                                    background: isSelected ? 'var(--primary-light)' : 'var(--surface-alt)',
+                                    color: isSelected ? 'var(--primary)' : 'var(--text)'
+                                  }}
+                                >
+                                  {isSelected ? <Check size={14} /> : <div style={{ width: 14 }} />}
+                                  <span>{typeof vItem.value === 'number' ? `$${vItem.value.toLocaleString()}` : String(vItem.value)}</span>
+                                  <span style={{ fontSize: 10, color: 'var(--text-muted)', background: 'rgba(0,0,0,0.06)', padding: '2px 6px', borderRadius: 4 }}>
+                                    {vItem.filename}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <Collapse title="Institution" icon={<School size={15} />} defaultOpen>
                   <div className="field-grid">
                     <Field label="Name" value={inst.name} onChange={v => set('institution.name', v)} full />

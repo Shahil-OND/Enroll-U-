@@ -87,10 +87,14 @@ def _get_nested(data: dict, keys: list):
     return get_nested(data, keys)
 
 
-def _persist_to_dynamodb(cleaned_data: dict, warnings: list, confidence: float):
+def _persist_to_dynamodb(cleaned_data: dict, warnings: list, confidence: float,
+                         processing_mode: str = None, group_id: str = None,
+                         batch_id: str = None, institution_name: str = None) -> str:
     """
     Updates the existing DynamoDB staging item (PK = documentId, SK = 'current')
-    with status='pending_review', extracted_json, confidence_score, warnings, etc.
+    with status='pending_review' (standalone) or status='partial' (grouped),
+    extracted_json, confidence_score, warnings, etc.
+    Returns the assigned status string.
     """
     try:
         table_name = os.environ.get("STAGING_TABLE_NAME", "EnrollUStaging")
@@ -113,9 +117,35 @@ def _persist_to_dynamodb(cleaned_data: dict, warnings: list, confidence: float):
 
         if not doc_id:
             print("[WARN] DynamoDB persistence skipped: document_id not found in metadata.")
-            return
+            return "unknown"
 
         meta["document_id"] = doc_id
+
+        # Determine processing mode, group_id, batch_id
+        mode = processing_mode or meta.get("processing_mode") or meta.get("processingMode")
+        gid = group_id or meta.get("groupId") or meta.get("group_id")
+        bid = batch_id or meta.get("batchId") or meta.get("batch_id")
+        inst_name = institution_name or meta.get("institutionName") or meta.get("institution_name")
+
+        # Check existing staging record if missing in metadata
+        try:
+            existing_res = table.get_item(Key={'documentId': doc_id, 'stage': 'current'})
+            existing_item = existing_res.get('Item') if isinstance(existing_res, dict) else None
+            if isinstance(existing_item, dict):
+                if not mode and existing_item.get("processing_mode"):
+                    mode = str(existing_item.get("processing_mode"))
+                if not gid and existing_item.get("groupId"):
+                    gid = str(existing_item.get("groupId"))
+                if not bid and existing_item.get("batchId"):
+                    bid = str(existing_item.get("batchId"))
+                if not inst_name and existing_item.get("institutionName"):
+                    inst_name = str(existing_item.get("institutionName"))
+        except Exception as read_err:
+            print(f"[DEBUG] Could not read existing DynamoDB record: {read_err}")
+
+        # Requirement 6: Grouped documents get 'partial' status; standalone get 'pending_review'
+        is_grouped = (isinstance(mode, str) and mode == "grouped") or (isinstance(gid, str) and bool(gid.strip()))
+        target_status = "partial" if is_grouped else "pending_review"
 
         file_path = meta.get("original_file_path", "")
         base_name = os.path.basename(file_path)
@@ -143,18 +173,30 @@ def _persist_to_dynamodb(cleaned_data: dict, warnings: list, confidence: float):
             "metadata = :meta, "
             "extraction_timestamp = :ts, "
             "original_file_path = :path, "
-            "filename = :fname"
+            "filename = :fname, "
+            "processing_mode = :pm"
         )
         expr_vals = {
-            ':stat': 'pending_review',
+            ':stat': target_status,
             ':json': json.dumps(cleaned_data),
             ':conf': decimal_confidence,
             ':warn': warnings,
             ':meta': converted_meta,
             ':ts': meta.get("extraction_timestamp", ""),
             ':path': file_path,
-            ':fname': filename or "document"
+            ':fname': filename or "document",
+            ':pm': mode or "standalone"
         }
+
+        if gid:
+            update_expr += ", groupId = :gid, group_id = :gid"
+            expr_vals[':gid'] = gid
+        if bid:
+            update_expr += ", batchId = :bid, batch_id = :bid"
+            expr_vals[':bid'] = bid
+        if inst_name:
+            update_expr += ", institutionName = :inst, institution_name = :inst"
+            expr_vals[':inst'] = inst_name
 
         if raw_text:
             update_expr += ", raw_text = :rt"
@@ -171,9 +213,11 @@ def _persist_to_dynamodb(cleaned_data: dict, warnings: list, confidence: float):
             },
             ExpressionAttributeValues=expr_vals
         )
-        print(f"[SUCCESS] Updated DynamoDB staging item for documentId: {doc_id} with status='pending_review'")
+        print(f"[SUCCESS] Updated DynamoDB staging item for documentId: {doc_id} with status='{target_status}'")
+        return target_status
     except Exception as e:
         print(f"[ERROR] Failed to update DynamoDB staging record: {e}")
+        return "failed"
 
 
 # =============================================================================
@@ -216,6 +260,12 @@ def handler(event, context):
         extracted_json = event.get("extracted_json") or event
         doc_id = event.get("document_id") or extracted_json.get("metadata", {}).get("document_id")
 
+        # Extract batch/group/mode parameters
+        processing_mode = event.get("processing_mode") or event.get("processingMode") or extracted_json.get("metadata", {}).get("processing_mode")
+        group_id = event.get("group_id") or event.get("groupId") or extracted_json.get("metadata", {}).get("groupId")
+        batch_id = event.get("batch_id") or event.get("batchId") or extracted_json.get("metadata", {}).get("batchId")
+        institution_name = event.get("institution_name") or event.get("institutionName") or extracted_json.get("metadata", {}).get("institutionName")
+
         # Ensure document_id is propagated if found in parent event
         if doc_id:
             extracted_json.setdefault("metadata", {})["document_id"] = doc_id
@@ -228,9 +278,22 @@ def handler(event, context):
         warnings, cleaned_data, confidence = validate_extracted(extracted_json)
 
         # Persist validated output to existing DynamoDB staging item
-        _persist_to_dynamodb(cleaned_data, warnings, confidence)
+        status_assigned = _persist_to_dynamodb(
+            cleaned_data=cleaned_data,
+            warnings=warnings,
+            confidence=confidence,
+            processing_mode=processing_mode,
+            group_id=group_id,
+            batch_id=batch_id,
+            institution_name=institution_name
+        )
 
         return {
+            "document_id": doc_id,
+            "status": status_assigned,
+            "processing_mode": processing_mode or "standalone",
+            "group_id": group_id,
+            "batch_id": batch_id,
             "validated_data": cleaned_data,
             "warnings": warnings,
             "confidence_score": confidence,

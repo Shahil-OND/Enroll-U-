@@ -5,35 +5,6 @@ const API = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'https://55q20zc7kj.execute-api.us-west-2.amazonaws.com/prod' 
 });
 
-// Attach Cognito JWT / Auth token to all requests if present
-API.interceptors.request.use((config) => {
-  const token = window.__ENROLLU_AUTH_TOKEN__ || 
-    localStorage.getItem('enrollu_auth_token') || 
-    sessionStorage.getItem('enrollu_auth_token');
-
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-}, (error) => Promise.reject(error));
-
-// Expired session & 401 handler — redirects to login when token is invalid or expired
-API.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401 && !window.location.pathname.startsWith('/login')) {
-      console.warn('[API Client] Unauthorized (401) — redirecting to /login');
-      localStorage.removeItem('enrollu_auth_token');
-      sessionStorage.removeItem('enrollu_auth_token');
-      localStorage.removeItem('enrollu_auth_user');
-      sessionStorage.removeItem('enrollu_auth_user');
-      delete window.__ENROLLU_AUTH_TOKEN__;
-      window.location.href = '/login';
-    }
-    return Promise.reject(error);
-  }
-);
-
 const parseResponse = (r) => {
   if (r.data?.body) {
     return typeof r.data.body === 'string' 
@@ -92,3 +63,18 @@ export const updateJson   = (id, json)      => API.patch(`/documents/${id}/json`
 export const getHealth    = ()              => API.get('/health').then(parseResponse);
 export const translateText = (text)          => API.post('/translate', { text }).then(parseResponse);
 export const pasteText     = (text)          => API.post('/paste', { text }).then(parseResponse);
+
+// ── Batch Processing APIs (DPI Requirements) ─────────────────────────────────
+export const createBatch   = (filesData)     => API.post('/batches', { files: filesData }).then(parseResponse);
+export const startBatch    = (batchId)       => API.post(`/batches/${batchId}/start`).then(parseResponse);
+export const getBatch      = (batchId)       => API.get(`/batches/${batchId}`).then(parseResponse);
+
+// Direct S3 Upload via Presigned PUT URL (content does NOT pass through API Gateway / Lambda)
+export const uploadFileToPresignedUrl = (presignedUrl, file, contentType, onProgress) => {
+  return axios.put(presignedUrl, file, {
+    headers: {
+      'Content-Type': contentType || file.type || 'application/octet-stream',
+    },
+    onUploadProgress: (e) => onProgress && onProgress(Math.round((e.loaded * 100) / (e.total || file.size))),
+  });
+};

@@ -656,12 +656,16 @@ def handler(event, context):
         )
         # Blocker 3: Return document_id and routing keys at top-level so validate.py
         # can resolve them without relying on the nested metadata fallback path.
-        return {
+        res = {
             "document_id": doc_id,
             "file_path": file_path,
             "extraction_method": method,
             **normalized,
         }
+        for prop in ["batch_id", "batchId", "group_id", "groupId", "processing_mode", "processingMode", "institution_name", "institutionName"]:
+            if isinstance(event, dict) and prop in event:
+                res[prop] = event[prop]
+        return res
     except Exception as e:
         print(f"[ERROR] Normalization handler failed: {e}")
         _update_status_failed(doc_id, str(e))

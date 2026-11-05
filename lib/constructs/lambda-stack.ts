@@ -13,6 +13,7 @@ export interface LambdaStackProps extends StackProps {
   readonly appSecret: secretsmanager.ISecret;
   readonly mysqlSecret: secretsmanager.ISecret;
   readonly stateMachineArn: string;
+  readonly batchStateMachineArn?: string;
 }
 
 export class LambdaStack extends Stack {
@@ -28,6 +29,8 @@ export class LambdaStack extends Stack {
   public readonly uploadFn: lambda.Function;
   public readonly updateJsonFn: lambda.Function;
   public readonly translateFn: lambda.Function;
+  public readonly batchFn: lambda.Function;
+  public readonly consolidationFn: lambda.Function;
 
   constructor(scope: Construct, id: string, props: LambdaStackProps) {
     super(scope, id, props);
@@ -124,6 +127,30 @@ export class LambdaStack extends Stack {
     this.uploadFn = this.createFunction('UploadFunction', 'EnrollU-Upload', 'upload.handler', path.resolve(process.cwd(), 'build', 'lambdas', 'crud'), sharedCrudLayer, { ...crudEnv, STEP_FUNCTIONS_ARN: props.stateMachineArn });
     this.updateJsonFn = this.createFunction('UpdateJsonFunction', 'EnrollU-UpdateJson', 'update_json.handler', path.resolve(process.cwd(), 'build', 'lambdas', 'crud'), sharedCrudLayer, crudEnv);
     this.translateFn = this.createFunction('TranslateFunction', 'EnrollU-Translate', 'translate.handler', path.resolve(process.cwd(), 'build', 'lambdas', 'crud'), sharedCrudLayer, crudEnv);
+
+    this.batchFn = this.createFunction(
+      'BatchFunction',
+      'EnrollU-Batch',
+      'batch.handler',
+      path.resolve(process.cwd(), 'build', 'lambdas', 'crud'),
+      sharedCrudLayer,
+      {
+        ...crudEnv,
+        STEP_FUNCTIONS_ARN: props.stateMachineArn,
+        STEP_FUNCTIONS_BATCH_ARN: props.batchStateMachineArn || props.stateMachineArn,
+      },
+      Duration.minutes(1),
+    );
+
+    this.consolidationFn = this.createFunction(
+      'ConsolidationFunction',
+      'EnrollU-Consolidation',
+      'consolidation.handler',
+      path.resolve(process.cwd(), 'build', 'lambdas', 'consolidation'),
+      sharedWorkflowLayer,
+      workflowEnv,
+      Duration.minutes(3),
+    );
 
     props.ingestBucket.grantReadWrite(this.executionRole);
     props.stagingTable.grantReadWriteData(this.executionRole);

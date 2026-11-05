@@ -5,6 +5,7 @@ import { Construct } from 'constructs';
 export class SecretsStack extends Stack {
   public readonly appSecret: secretsmanager.Secret;
   public readonly mysqlSecret: secretsmanager.Secret;
+  public readonly stagingMysqlSecret: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: StackProps = {}) {
     super(scope, id, props);
@@ -26,6 +27,18 @@ export class SecretsStack extends Stack {
       description: 'Placeholder MySQL credential secret for future deployment.',
       generateSecretString: {
         secretStringTemplate: JSON.stringify({ username: 'enrollu' }),
+        generateStringKey: 'password',
+        excludePunctuation: true,
+        includeSpace: false,
+      },
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    this.stagingMysqlSecret = new secretsmanager.Secret(this, 'StagingMysqlSecret', {
+      secretName: 'enrollu/staging/mysql',
+      description: 'Staging MySQL credential secret for DPI testing and verification.',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({ username: 'enrollu_staging', database: 'enrollu_staging' }),
         generateStringKey: 'password',
         excludePunctuation: true,
         includeSpace: false,

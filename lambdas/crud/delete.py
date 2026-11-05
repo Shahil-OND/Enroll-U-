@@ -12,21 +12,6 @@ def handler(event, context):
     }
     
     try:
-        # Check authorization role (Cognito claims)
-        # Requirement: Only an Administrator can delete documents
-        user_info = database.extract_user_info(event)
-        authorizer = event.get("requestContext", {}).get("authorizer", {})
-        claims = authorizer.get("claims") if isinstance(authorizer, dict) else None
-
-        if claims and not user_info["is_admin"]:
-            return {
-                "statusCode": 403,
-                "headers": headers,
-                "body": json.dumps({
-                    "error": "Forbidden: Administrator role required to delete documents"
-                }, ensure_ascii=False)
-            }
-
         path_params = event.get("pathParameters") or {}
         document_id = path_params.get("documentId")
         

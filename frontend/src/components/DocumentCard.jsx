@@ -1,7 +1,6 @@
 // components/DocumentCard.jsx — Program/institution card similar to enroll-u.com listing cards
 import { Eye, FileText, FileSpreadsheet, Image as ImageIcon, FileEdit, File, Calendar, GraduationCap, School, MapPin, Clock, Trash2, RotateCw, AlertTriangle } from 'lucide-react';
 import StatusBadge from './StatusBadge';
-import { useAuth } from '../context/AuthContext';
 
 export function FileIcon({ filename, size = 16, style = {} }) {
   const ext = (filename || '').split('.').pop().toLowerCase();
@@ -55,7 +54,6 @@ function ConfidenceBar({ score }) {
 }
 
 export default function DocumentCard({ doc, onReview, onDelete, onRetry }) {
-  const { isAdmin } = useAuth();
   let data = typeof doc.extracted_json === 'string'
     ? (() => { try { return JSON.parse(doc.extracted_json); } catch { return null; } })()
     : doc.extracted_json;
@@ -188,9 +186,9 @@ export default function DocumentCard({ doc, onReview, onDelete, onRetry }) {
             </button>
           )}
 
-          {isFailed && onDelete && isAdmin && (
+          {isFailed && onDelete && (
             <button className="btn btn-ghost btn-sm" style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', padding: '6px 8px', color: '#dc2626', border: '1px solid #fca5a5', background: '#fef2f2' }}
-              title="Delete failed document (Administrator only)"
+              title="Delete failed document card (S3 file remains safe)"
               onClick={() => onDelete(doc)}>
               <Trash2 size={13} />
             </button>

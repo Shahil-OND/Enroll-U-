@@ -1,6 +1,5 @@
 import { Stack, StackProps } from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
-import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { Construct } from 'constructs';
 
@@ -13,7 +12,7 @@ export interface ApiGatewayStackProps extends StackProps {
   readonly uploadFn: lambda.IFunction;
   readonly updateJsonFn: lambda.IFunction;
   readonly translateFn: lambda.IFunction;
-  readonly userPool?: cognito.IUserPool;
+  readonly batchFn?: lambda.IFunction;
 }
 
 export class ApiGatewayStack extends Stack {
@@ -48,25 +47,11 @@ export class ApiGatewayStack extends Stack {
       },
     });
 
-    // Cognito User Pools Authorizer (protects all endpoints except /health)
-    let authorizerMethodOptions: apigateway.MethodOptions | undefined;
-    if (props.userPool) {
-      const authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'EnrollUAuthorizer', {
-        cognitoUserPools: [props.userPool],
-        authorizerName: 'EnrollUCognitoAuthorizer',
-        identitySource: 'method.request.header.Authorization',
-      });
-      authorizerMethodOptions = {
-        authorizer,
-        authorizationType: apigateway.AuthorizationType.COGNITO,
-      };
-    }
-
     const documents = api.root.addResource('documents');
-    documents.addMethod('GET', new apigateway.LambdaIntegration(props.getDocumentsFn), authorizerMethodOptions);
+    documents.addMethod('GET', new apigateway.LambdaIntegration(props.getDocumentsFn));
 
     const documentId = documents.addResource('{documentId}');
-    documentId.addMethod('DELETE', new apigateway.LambdaIntegration(props.deleteFn), authorizerMethodOptions);
+    documentId.addMethod('DELETE', new apigateway.LambdaIntegration(props.deleteFn));
 
     const approve = documentId.addResource('approve');
     const reject = documentId.addResource('reject');
@@ -74,26 +59,38 @@ export class ApiGatewayStack extends Stack {
     const jsonResource = documentId.addResource('json');
     const file = documentId.addResource('file');
 
-    file.addMethod('GET', new apigateway.LambdaIntegration(props.getDocumentsFn), authorizerMethodOptions);
+
+    file.addMethod('GET', new apigateway.LambdaIntegration(props.getDocumentsFn));
 
     for (const [resource, fn] of [
       [approve, props.approveFn],
       [reject, props.rejectFn],
       [reprocess, props.reprocessFn],
     ] as const) {
-      resource.addMethod('POST', new apigateway.LambdaIntegration(fn), authorizerMethodOptions);
+      resource.addMethod('POST', new apigateway.LambdaIntegration(fn));
     }
 
-    jsonResource.addMethod('PATCH', new apigateway.LambdaIntegration(props.updateJsonFn), authorizerMethodOptions);
+    jsonResource.addMethod('PATCH', new apigateway.LambdaIntegration(props.updateJsonFn));
 
     const upload = api.root.addResource('upload');
-    upload.addMethod('POST', new apigateway.LambdaIntegration(props.uploadFn), authorizerMethodOptions);
+    upload.addMethod('POST', new apigateway.LambdaIntegration(props.uploadFn));
 
     const paste = api.root.addResource('paste');
-    paste.addMethod('POST', new apigateway.LambdaIntegration(props.uploadFn), authorizerMethodOptions);
+    paste.addMethod('POST', new apigateway.LambdaIntegration(props.uploadFn));
 
     const translate = api.root.addResource('translate');
-    translate.addMethod('POST', new apigateway.LambdaIntegration(props.translateFn), authorizerMethodOptions);
+    translate.addMethod('POST', new apigateway.LambdaIntegration(props.translateFn));
+
+    if (props.batchFn) {
+      const batches = api.root.addResource('batches');
+      batches.addMethod('POST', new apigateway.LambdaIntegration(props.batchFn));
+
+      const batchId = batches.addResource('{batchId}');
+      batchId.addMethod('GET', new apigateway.LambdaIntegration(props.batchFn));
+
+      const batchStart = batchId.addResource('start');
+      batchStart.addMethod('POST', new apigateway.LambdaIntegration(props.batchFn));
+    }
 
     const health = api.root.addResource('health');
     health.addMethod(

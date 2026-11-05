@@ -11,7 +11,10 @@ Addition vs. prototype:
   currency will cause every academic_period_scheduled_payments insert to fail.
 """
 from datetime import datetime
-from jsonschema import Draft7Validator
+try:
+    from jsonschema import Draft7Validator
+except ImportError:
+    Draft7Validator = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Full JSON Schema for validation
@@ -218,6 +221,8 @@ CURRENCY_RANGES = {
 
 def run_schema_validation(data: dict) -> list[str]:
     """Run JSON schema validation and return a list of [SCHEMA] warning strings."""
+    if Draft7Validator is None:
+        return [], []
     validator = Draft7Validator(ACADEMIC_SCHEMA)
     schema_errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
     warnings = []

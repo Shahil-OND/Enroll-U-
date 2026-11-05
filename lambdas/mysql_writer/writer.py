@@ -54,7 +54,10 @@ def get_connection():
     password = os.environ.get("MYSQL_PASSWORD")
     database = os.environ.get("MYSQL_DATABASE", "enrollu")
 
-    secret_arn = os.environ.get("MYSQL_SECRET_ARN") or os.environ.get("APP_SECRET_ARN")
+    secret_arn = os.environ.get("MYSQL_STAGING_SECRET_ARN") or os.environ.get("MYSQL_SECRET_ARN") or os.environ.get("APP_SECRET_ARN")
+    dpi_mode = os.environ.get("DPI_MODE")
+    if dpi_mode:
+        print(f"[INFO] Running in DPI mode ({dpi_mode}): writing strictly to staging database.")
     if secret_arn and not password:
         try:
             sm_client = boto3.client("secretsmanager")

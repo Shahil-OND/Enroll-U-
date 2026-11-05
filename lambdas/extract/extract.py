@@ -407,26 +407,33 @@ def handler(event, context):
 
         doc_id = event.get("document_id") or event.get("documentId") if isinstance(event, dict) else None
 
-        # Extract document_id from S3 key path: uploads/{document_id}/{filename}
+        # Extract document_id from S3 key path: uploads/{document_id}/{filename} or batches/{batch_id}/{document_id}/{filename}
         if not doc_id and key:
             parts = key.split("/")
             if len(parts) >= 3 and parts[0] == "uploads":
                 doc_id = parts[1]
                 print(f"[INFO] Extracted document_id from S3 key path: {doc_id}")
+            elif len(parts) >= 4 and parts[0] == "batches":
+                doc_id = parts[2]
+                print(f"[INFO] Extracted document_id from batches S3 key path: {doc_id}")
 
         if not doc_id:
             raise ValueError(
                 f"document_id missing from event and could not be extracted from S3 key '{key}'. "
-                "Expected key format: uploads/{document_id}/{filename}"
+                "Expected key format: uploads/{document_id}/{filename} or batches/{batch_id}/{document_id}/{filename}"
             )
 
-        return {
+        res = {
             "bucket": bucket,
             "key": key,
             "document_id": doc_id,
             "raw_text": raw_text,
             "extraction_method": extraction_method,
         }
+        for prop in ["batch_id", "batchId", "group_id", "groupId", "processing_mode", "processingMode", "institution_name", "institutionName"]:
+            if isinstance(event, dict) and prop in event:
+                res[prop] = event[prop]
+        return res
     except Exception as e:
         print(f"[ERROR] Extraction handler failed: {e}")
         # Try to resolve doc_id if key exists

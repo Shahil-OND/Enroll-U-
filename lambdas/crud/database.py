@@ -19,42 +19,11 @@ def _get_dynamo_table():
     table_name = os.environ.get("STAGING_TABLE_NAME", "EnrollUStaging")
     # BUG-13: only re-create if the resource or table name changed
     if _dynamo_table is None:
-        region = os.environ.get("AWS_REGION")
-        _dynamodb = boto3.resource("dynamodb", region_name=region) if region else boto3.resource("dynamodb")
+        if _dynamodb is None:
+            region = os.environ.get("AWS_REGION")
+            _dynamodb = boto3.resource("dynamodb", region_name=region) if region else boto3.resource("dynamodb")
         _dynamo_table = _dynamodb.Table(table_name)
     return _dynamo_table
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Cognito Claims & Traceability Helper
-# ─────────────────────────────────────────────────────────────────────────────
-def extract_user_info(event: dict) -> dict:
-    """Extract authenticated user details from API Gateway Cognito authorizer context."""
-    if not isinstance(event, dict):
-        return {"user_id": "system", "email": "system@enrollu.internal", "groups": [], "is_admin": False}
-
-    auth_ctx = event.get("requestContext", {}).get("authorizer", {}) or {}
-    claims = auth_ctx.get("claims", {}) or {}
-    user_id = claims.get("sub") or claims.get("username")
-    email = claims.get("email") or claims.get("cognito:username")
-
-    groups_claim = claims.get("cognito:groups", [])
-    if isinstance(groups_claim, str):
-        groups = [g.strip() for g in groups_claim.split(",") if g.strip()]
-    elif isinstance(groups_claim, list):
-        groups = groups_claim
-    else:
-        groups = []
-
-    # Case-insensitive admin check
-    is_admin = any(g.lower() in ("administrator", "admin") for g in groups)
-
-    return {
-        "user_id": user_id or "anonymous",
-        "email": email or (f"{user_id}@user" if user_id else "anonymous"),
-        "groups": groups,
-        "is_admin": is_admin,
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,8 +39,9 @@ def init_db():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def create_staging_record(document_id: str, filename: str, file_path: str,
-                          doc_type: str, s3_key: str = None, uploaded_by: str = None):
-    now = datetime.utcnow().isoformat()
+                          doc_type: str, s3_key: str = None,
+                          batch_id: str = None, group_id: str = None,
+                          processing_mode: str = "standalone", institution_name: str = None):
     item = {
         "documentId": document_id,
         "stage": "current",
@@ -80,13 +50,20 @@ def create_staging_record(document_id: str, filename: str, file_path: str,
         "original_file_path": file_path,
         "document_type": doc_type,
         "status": "processing",
-        "extraction_timestamp": now,
-        "uploaded_at": now,
+        "processing_mode": processing_mode or "standalone",
+        "extraction_timestamp": datetime.utcnow().isoformat(),
     }
     if s3_key:
         item["s3_key"] = s3_key
-    if uploaded_by:
-        item["uploaded_by"] = uploaded_by
+    if batch_id:
+        item["batchId"] = batch_id
+        item["batch_id"] = batch_id
+    if group_id:
+        item["groupId"] = group_id
+        item["group_id"] = group_id
+    if institution_name:
+        item["institutionName"] = institution_name
+        item["institution_name"] = institution_name
     try:
         _get_dynamo_table().put_item(
             Item=item,
@@ -155,22 +132,14 @@ def save_extraction_result(document_id: str, raw_text: str, method: str,
     )
 
 
-def update_extracted_json(document_id: str, updated_json: dict, edited_by: str = None):
-    """Operator edited the extracted JSON — persist their changes and audit info."""
-    now = datetime.utcnow().isoformat()
-    update_expr = "SET extracted_json = :ej, edited_at = :ea"
-    expr_vals = {
-        ":ej": json.dumps(updated_json, ensure_ascii=False),
-        ":ea": now,
-    }
-    if edited_by:
-        update_expr += ", edited_by = :eb"
-        expr_vals[":eb"] = edited_by
-
+def update_extracted_json(document_id: str, updated_json: dict):
+    """Operator edited the extracted JSON — persist their changes."""
     _get_dynamo_table().update_item(
         Key={"documentId": document_id, "stage": "current"},
-        UpdateExpression=update_expr,
-        ExpressionAttributeValues=expr_vals,
+        UpdateExpression="SET extracted_json = :ej",
+        ExpressionAttributeValues={
+            ":ej": json.dumps(updated_json, ensure_ascii=False)
+        },
     )
 
 
@@ -194,6 +163,20 @@ def _normalize_document_item(item: dict | None) -> dict | None:
     if "warnings" in item and isinstance(item["warnings"], str):
         try:
             item["warnings"] = json.loads(item["warnings"])
+        except Exception:
+            pass
+
+    # Safely parse conflicts if it was stored as a JSON string
+    if "conflicts" in item and isinstance(item["conflicts"], str):
+        try:
+            item["conflicts"] = json.loads(item["conflicts"])
+        except Exception:
+            pass
+
+    # Safely parse source_documents if it was stored as a JSON string
+    if "source_documents" in item and isinstance(item["source_documents"], str):
+        try:
+            item["source_documents"] = json.loads(item["source_documents"])
         except Exception:
             pass
 
@@ -223,7 +206,7 @@ def list_documents(status: str = None) -> list[dict]:
             break
         scan_kwargs["ExclusiveStartKey"] = last_key
 
-    normalized_items = [_normalize_document_item(item) for item in items if item]
+    normalized_items = [_normalize_document_item(item) for item in items if item and not item.get("documentId", "").startswith("batch#")]
     return sorted(normalized_items, key=lambda x: x.get("extraction_timestamp", ""), reverse=True)
 
 
@@ -259,24 +242,16 @@ def get_dashboard_stats() -> dict:
     }
 
 
-def approve_document(document_id: str, final_json: dict, approved_by: str = None) -> dict:
-    now = datetime.utcnow().isoformat()
-    update_expr = "SET #s = :s, extracted_json = :ej, processed_timestamp = :pt, approved_at = :aa"
-    expr_vals = {
-        ":s": "approved",
-        ":ej": json.dumps(final_json, ensure_ascii=False),
-        ":pt": now,
-        ":aa": now,
-    }
-    if approved_by:
-        update_expr += ", approved_by = :ab"
-        expr_vals[":ab"] = approved_by
-
+def approve_document(document_id: str, final_json: dict) -> dict:
     _get_dynamo_table().update_item(
         Key={"documentId": document_id, "stage": "current"},
-        UpdateExpression=update_expr,
+        UpdateExpression="SET #s = :s, extracted_json = :ej, processed_timestamp = :pt",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues=expr_vals,
+        ExpressionAttributeValues={
+            ":s": "approved",
+            ":ej": json.dumps(final_json, ensure_ascii=False),
+            ":pt": datetime.utcnow().isoformat(),
+        },
     )
     # BUG-01 FIX: count programs from campuses[].academic_programs[], fall back to legacy programs[]
     campuses = final_json.get("campuses", []) or []
@@ -291,23 +266,12 @@ def approve_document(document_id: str, final_json: dict, approved_by: str = None
     }
 
 
-def reject_document(document_id: str, reason: str, rejected_by: str = None):
-    now = datetime.utcnow().isoformat()
-    update_expr = "SET #s = :s, error_message = :e, rejected_at = :ra"
-    expr_vals = {
-        ":s": "rejected",
-        ":e": reason,
-        ":ra": now,
-    }
-    if rejected_by:
-        update_expr += ", rejected_by = :rb"
-        expr_vals[":rb"] = rejected_by
-
+def reject_document(document_id: str, reason: str):
     _get_dynamo_table().update_item(
         Key={"documentId": document_id, "stage": "current"},
-        UpdateExpression=update_expr,
+        UpdateExpression="SET #s = :s, error_message = :e",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues=expr_vals,
+        ExpressionAttributeValues={":s": "rejected", ":e": reason},
     )
 
 
@@ -316,4 +280,157 @@ def delete_document(document_id: str):
     _get_dynamo_table().delete_item(
         Key={"documentId": document_id, "stage": "current"}
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Batch & Institution Group Helpers (DPI Requirements)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_batch_record(batch_id: str, total_documents: int, standalone_count: int = 0,
+                        groups_count: int = 0, groups_info: dict = None, metadata: dict = None):
+    """Creates a top-level batch metadata record in EnrollUStaging."""
+    now = datetime.utcnow().isoformat()
+    item = {
+        "documentId": f"batch#{batch_id}",
+        "stage": "metadata",
+        "batchId": batch_id,
+        "batch_id": batch_id,
+        "type": "batch_metadata",
+        "status": "pending_upload",
+        "total_documents": total_documents,
+        "standalone_count": standalone_count,
+        "groups_count": groups_count,
+        "groups_info": json.dumps(groups_info or {}, ensure_ascii=False),
+        "created_at": now,
+        "updated_at": now,
+    }
+    if metadata:
+        item["metadata"] = json.dumps(metadata, ensure_ascii=False)
+    _get_dynamo_table().put_item(Item=item)
+    return item
+
+
+def get_batch_record(batch_id: str) -> dict | None:
+    """Retrieves top-level batch metadata."""
+    res = _get_dynamo_table().get_item(Key={"documentId": f"batch#{batch_id}", "stage": "metadata"})
+    item = res.get("Item")
+    if not item:
+        return None
+    if "groups_info" in item and isinstance(item["groups_info"], str):
+        try:
+            item["groups_info"] = json.loads(item["groups_info"])
+        except Exception:
+            pass
+    if "metadata" in item and isinstance(item["metadata"], str):
+        try:
+            item["metadata"] = json.loads(item["metadata"])
+        except Exception:
+            pass
+    return item
+
+
+def update_batch_status(batch_id: str, status: str, error_message: str = None, execution_arn: str = None):
+    """Updates batch execution status and timestamp."""
+    expr = "SET #s = :s, updated_at = :u"
+    names = {"#s": "status"}
+    vals = {":s": status, ":u": datetime.utcnow().isoformat()}
+    if error_message:
+        expr += ", error_message = :e"
+        vals[":e"] = error_message
+    if execution_arn:
+        expr += ", execution_arn = :arn"
+        vals[":arn"] = execution_arn
+
+    _get_dynamo_table().update_item(
+        Key={"documentId": f"batch#{batch_id}", "stage": "metadata"},
+        UpdateExpression=expr,
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=vals,
+    )
+
+
+def get_documents_by_batch(batch_id: str) -> list[dict]:
+    """Retrieves all documents associated with a batchId using GSI or fallback scan."""
+    table = _get_dynamo_table()
+    items = []
+    try:
+        from boto3.dynamodb.conditions import Key
+        res = table.query(
+            IndexName="byBatchId",
+            KeyConditionExpression=Key("batchId").eq(batch_id)
+        )
+        items = res.get("Items", [])
+    except Exception as e:
+        print(f"[WARN] GSI byBatchId query failed ({e}), falling back to scan...")
+        scan_res = table.scan(
+            FilterExpression="batchId = :b AND stage = :st",
+            ExpressionAttributeValues={":b": batch_id, ":st": "current"}
+        )
+        items = scan_res.get("Items", [])
+
+    return [_normalize_document_item(i) for i in items if i and i.get("documentId", "").startswith("batch#") is False]
+
+
+def get_documents_by_group(group_id: str) -> list[dict]:
+    """Retrieves all documents associated with an institution groupId using GSI or fallback scan."""
+    table = _get_dynamo_table()
+    items = []
+    try:
+        from boto3.dynamodb.conditions import Key
+        res = table.query(
+            IndexName="byGroupId",
+            KeyConditionExpression=Key("groupId").eq(group_id)
+        )
+        items = res.get("Items", [])
+    except Exception as e:
+        print(f"[WARN] GSI byGroupId query failed ({e}), falling back to scan...")
+        scan_res = table.scan(
+            FilterExpression="groupId = :g AND stage = :st",
+            ExpressionAttributeValues={":g": group_id, ":st": "current"}
+        )
+        items = scan_res.get("Items", [])
+
+    return [_normalize_document_item(i) for i in items if i and not i.get("is_consolidated")]
+
+
+def save_consolidated_record(consolidated_doc_id: str, group_id: str, batch_id: str,
+                             institution_name: str, consolidated_json: dict,
+                             conflicts: list, source_documents: list,
+                             confidence: float = 1.0, raw_text: str = ""):
+    """
+    Saves a consolidated record for an institution group in EnrollUStaging
+    with status='pending_review' and is_consolidated=True.
+    """
+    now = datetime.utcnow().isoformat()
+    from decimal import Decimal
+    decimal_conf = Decimal(str(round(confidence, 4))) if confidence is not None else Decimal("1.0")
+
+    item = {
+        "documentId": consolidated_doc_id,
+        "stage": "current",
+        "document_id": consolidated_doc_id,
+        "groupId": group_id,
+        "group_id": group_id,
+        "batchId": batch_id or "",
+        "batch_id": batch_id or "",
+        "institutionName": institution_name or "",
+        "institution_name": institution_name or "",
+        "status": "pending_review",
+        "is_consolidated": True,
+        "processing_mode": "grouped",
+        "filename": f"Consolidated — {institution_name or group_id}",
+        "extracted_json": json.dumps(consolidated_json, ensure_ascii=False),
+        "conflicts": json.dumps(conflicts or [], ensure_ascii=False),
+        "source_documents": json.dumps(source_documents or [], ensure_ascii=False),
+        "confidence_score": decimal_conf,
+        "raw_text": raw_text or "",
+        "extraction_timestamp": now,
+        "processed_timestamp": now,
+        "warnings": json.dumps([f"[CONSOLIDATION] {len(conflicts)} conflict(s) detected across {len(source_documents)} source documents."] if conflicts else [], ensure_ascii=False),
+    }
+
+    _get_dynamo_table().put_item(Item=item)
+    print(f"[SUCCESS] Saved consolidated record {consolidated_doc_id} for group {group_id}")
+    return item
+
 

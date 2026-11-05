@@ -68,11 +68,9 @@ def handler(event, context):
                 }, ensure_ascii=False)
             }
 
-        # Save operator edits to DynamoDB with audit traceability
-        user_info = database.extract_user_info(event)
-        editor = user_info.get("email") or user_info.get("user_id")
-        database.update_extracted_json(document_id, updated_json, edited_by=editor)
-        print(f"[SUCCESS] Updated extracted_json for document_id: {document_id} by {editor}")
+        # Save operator edits to DynamoDB
+        database.update_extracted_json(document_id, updated_json)
+        print(f"[SUCCESS] Updated extracted_json for document_id: {document_id}")
 
         return {
             "statusCode": 200,

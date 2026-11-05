@@ -16,5 +16,21 @@ export class DynamoDBStack extends Stack {
       pointInTimeRecovery: true,
       removalPolicy: RemovalPolicy.DESTROY,
     });
+
+    // GSI1: Query all documents and partial results by institution groupId
+    this.stagingTable.addGlobalSecondaryIndex({
+      indexName: 'byGroupId',
+      partitionKey: { name: 'groupId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'documentId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI2: Query all documents and metadata by batchId
+    this.stagingTable.addGlobalSecondaryIndex({
+      indexName: 'byBatchId',
+      partitionKey: { name: 'batchId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'documentId', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
   }
 }

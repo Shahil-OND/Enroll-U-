@@ -40,9 +40,6 @@ def handler(event, context):
         doc_type = "unknown"
         file_bytes = None
 
-        user_info = database.extract_user_info(event)
-        uploader = user_info.get("email") or user_info.get("user_id")
-
         if "application/json" in content_type:
             try:
                 import base64
@@ -103,7 +100,6 @@ def handler(event, context):
                                 file_path=f"s3://{bucket}/{s3_key}",
                                 doc_type=f_doc_type,
                                 s3_key=s3_key,
-                                uploaded_by=uploader,
                             )
                             
                             documents_batch.append({
@@ -226,7 +222,6 @@ def handler(event, context):
             file_path=f"s3://{bucket}/{s3_key}",
             doc_type=doc_type,
             s3_key=s3_key,
-            uploaded_by=uploader,
         )
 
         return {

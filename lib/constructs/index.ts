@@ -2,7 +2,6 @@ export * from './account-stack';
 export * from './apigateway-stack';
 export * from './bedrock-stack';
 export * from './cloudfront-stack';
-export * from './cognito-stack';
 export * from './database-stack';
 export * from './dynamodb-stack';
 export * from './eventbridge-stack';
